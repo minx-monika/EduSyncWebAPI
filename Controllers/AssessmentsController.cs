@@ -8,174 +8,208 @@ using EduSyncWebAPI.Data;
 using EduSyncWebAPI.Models;
 using EduSyncWebAPI.DTOs;
 using Microsoft.AspNetCore.Authorization;
-using System.Security.Claims;
+using Microsoft.Extensions.Logging;
 
-namespace EduSyncWebAPI.Controllers
+namespace EduSyncAPI.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize] // Require authentication for all actions unless explicitly allowed
+    [Authorize]
     public class AssessmentsController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ILogger<AssessmentsController> _logger;
 
-        public AssessmentsController(AppDbContext context)
+        public AssessmentsController(AppDbContext context, ILogger<AssessmentsController> logger)
         {
             _context = context;
+            _logger = logger;
         }
 
-        // GET: api/Assessments
-        [AllowAnonymous]
+        // Get all assessments without questions
         [HttpGet]
         public async Task<ActionResult<IEnumerable<AssessmentDto>>> GetAssessments()
         {
-            var assessments = await _context.Assessments.ToListAsync();
-            var assessmentsDto = assessments.Select(a => new AssessmentDto
-            {
-                AssessmentId = a.AssessmentId,
-                Title = a.Title,
-                MaxScore = a.MaxScore,
-                CourseId = a.CourseId
-            }).ToList();
-
-            return Ok(assessmentsDto);
+            return await _context.Assessments
+                .Select(a => new AssessmentDto
+                {
+                    AssessmentId = a.AssessmentId,
+                    Title = a.Title,
+                    MaxScore = a.MaxScore,
+                    CourseId = a.CourseId
+                }).ToListAsync();
         }
 
-        // GET: api/Assessments/5
-        [AllowAnonymous]
+        // Get single assessment with questions and course info
         [HttpGet("{id}")]
         public async Task<ActionResult<AssessmentDetailDto>> GetAssessment(Guid id)
         {
             var assessment = await _context.Assessments
+                .Include(a => a.Questions)
+                .ThenInclude(q => q.Options)
                 .Include(a => a.Course)
                 .FirstOrDefaultAsync(a => a.AssessmentId == id);
 
-            if (assessment == null)
-            {
-                return NotFound();
-            }
+            if (assessment == null) return NotFound();
 
-            var assessmentDetailDto = new AssessmentDetailDto
+            return new AssessmentDetailDto
             {
                 AssessmentId = assessment.AssessmentId,
                 Title = assessment.Title,
                 MaxScore = assessment.MaxScore,
-                Questions = assessment.Questions,
+                Questions = assessment.Questions.Select(q => new QuestionDto
+                {
+                    QuestionId = q.QuestionId,
+                    Text = q.Text,
+                    Marks = q.Marks,
+                    Options = q.Options.Select(o => new OptionDto
+                    {
+                        OptionId = o.OptionId,
+                        Text = o.Text,
+                        IsCorrect = o.IsCorrect
+                    }).ToList()
+                }).ToList(),
                 Course = assessment.Course == null ? null : new CourseReadDTO
                 {
                     CourseId = assessment.Course.CourseId,
                     Title = assessment.Course.Title,
-                    Description = assessment.Course.Description,
-                    InstructorId = assessment.Course.InstructorId,
-                    MediaUrl = assessment.Course.MediaUrl
+                    Description = assessment.Course.Description
                 }
             };
-
-            return Ok(assessmentDetailDto);
         }
 
-        // PUT: api/Assessments/5
-        [Authorize(Roles = "Instructor")]
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutAssessment(Guid id, AssessmentDto assessmentDto)
+        // Create new assessment with questions
+        [HttpPost]
+        [Authorize(Policy = "RequireAdminOrInstructorRole")]
+        public async Task<ActionResult<AssessmentDto>> PostAssessment(AssessmentCreateUpdateDto dto)
         {
-            if (id != assessmentDto.AssessmentId)
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            if (dto.CourseId != null &&
+                !await _context.Courses.AnyAsync(c => c.CourseId == dto.CourseId))
+                return Conflict("Course with given ID does not exist.");
+
+            var assessment = new Assessment
             {
-                return BadRequest();
+                AssessmentId = Guid.NewGuid(),
+                Title = dto.Title,
+                MaxScore = dto.MaxScore,
+                CourseId = dto.CourseId.Value,
+                Questions = new List<Question>()
+            };
+
+            if (dto.Questions != null)
+            {
+                foreach (var qDto in dto.Questions)
+                {
+                    var question = new Question
+                    {
+                        QuestionId = Guid.NewGuid(),
+                        Text = qDto.Text,
+                        Marks = qDto.Marks,
+                        Options = new List<Option>()
+                    };
+
+                    if (qDto.Options != null)
+                    {
+                        foreach (var oDto in qDto.Options)
+                        {
+                            question.Options.Add(new Option
+                            {
+                                OptionId = Guid.NewGuid(),
+                                Text = oDto.Text,
+                                IsCorrect = oDto.IsCorrect
+                            });
+                        }
+                    }
+
+                    assessment.Questions.Add(question);
+                }
             }
+
+            var resultDto = new AssessmentDto
+            {
+                AssessmentId = assessment.AssessmentId,
+                Title = assessment.Title,
+                MaxScore = assessment.MaxScore,
+                CourseId = assessment.CourseId
+            };
+
+            return CreatedAtAction(nameof(GetAssessment), new { id = resultDto.AssessmentId }, resultDto);
+        }
+
+        // Update existing assessment and questions
+        [HttpPut("{id}")]
+        [Authorize(Policy = "RequireAdminOrInstructorRole")]
+        public async Task<IActionResult> PutAssessment(Guid id, AssessmentCreateUpdateDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            if (id != dto.AssessmentId) return BadRequest("ID mismatch.");
 
             var assessment = await _context.Assessments
-                .Include(a => a.Course)
+                .Include(a => a.Questions)
+                .ThenInclude(q => q.Options)
                 .FirstOrDefaultAsync(a => a.AssessmentId == id);
 
-            if (assessment == null)
+            if (assessment == null) return NotFound();
+
+            if (dto.CourseId != null &&
+                !await _context.Courses.AnyAsync(c => c.CourseId == dto.CourseId))
+                return Conflict("Course with given ID does not exist.");
+
+            assessment.Title = dto.Title;
+            assessment.MaxScore = dto.MaxScore;
+            assessment.CourseId = dto.CourseId.Value;
+
+            // Remove existing questions & their options
+            _context.Questions.RemoveRange(assessment.Questions);
+            await _context.SaveChangesAsync();  // Save after removal to avoid tracking conflicts
+
+            if (dto.Questions != null)
             {
-                return NotFound();
+                assessment.Questions = dto.Questions.Select(q => new Question
+                {
+                    QuestionId = Guid.NewGuid(),
+                    Text = q.Text,
+                    Marks = q.Marks,
+                    Options = q.Options?.Select(o => new Option
+                    {
+                        OptionId = Guid.NewGuid(),
+                        Text = o.Text,
+                        IsCorrect = o.IsCorrect
+                    }).ToList() ?? new List<Option>()
+                }).ToList();
             }
-
-            var currentUserId = GetCurrentUserId();
-            if (assessment.Course == null || assessment.Course.InstructorId.ToString() != currentUserId)
+            else
             {
-                return Forbid("You can only update assessments of your own courses.");
+                assessment.Questions = new List<Question>();
             }
-
-            // Update fields
-            assessment.Title = assessmentDto.Title;
-            assessment.MaxScore = assessmentDto.MaxScore;
-            assessment.CourseId = assessmentDto.CourseId; // Consider validating this too to ensure it belongs to user
-
-            _context.Entry(assessment).State = EntityState.Modified;
 
             try
             {
                 await _context.SaveChangesAsync();
             }
-            catch (DbUpdateConcurrencyException)
+            catch (Exception ex)
             {
-                if (!AssessmentExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
+                _logger.LogError(ex, "Error updating assessment");
+                return StatusCode(500, "An error occurred while updating the assessment.");
             }
 
             return NoContent();
         }
 
-        // POST: api/Assessments
-        [Authorize(Roles = "Instructor")]
-        [HttpPost]
-        public async Task<ActionResult<AssessmentDto>> PostAssessment(AssessmentDto assessmentDto)
-        {
-            var currentUserId = GetCurrentUserId();
-
-            // Validate that Course belongs to current instructor
-            var course = await _context.Courses.FindAsync(assessmentDto.CourseId);
-            if (course == null)
-                return BadRequest("Course does not exist.");
-
-            if (course.InstructorId.ToString() != currentUserId)
-                return Forbid("You can only add assessments to your own courses.");
-
-            var assessment = new Assessment
-            {
-                AssessmentId = Guid.NewGuid(),
-                Title = assessmentDto.Title,
-                MaxScore = assessmentDto.MaxScore,
-                CourseId = assessmentDto.CourseId,
-                Questions = "" // Adjust if your DTO supports questions
-            };
-
-            _context.Assessments.Add(assessment);
-            await _context.SaveChangesAsync();
-
-            assessmentDto.AssessmentId = assessment.AssessmentId;
-
-            return CreatedAtAction(nameof(GetAssessment), new { id = assessment.AssessmentId }, assessmentDto);
-        }
-
-        // DELETE: api/Assessments/5
-        [Authorize(Roles = "Instructor")]
+        // Delete assessment with questions and options
         [HttpDelete("{id}")]
+        [Authorize(Policy = "RequireAdminOrInstructorRole")]
         public async Task<IActionResult> DeleteAssessment(Guid id)
         {
             var assessment = await _context.Assessments
-                .Include(a => a.Course)
+                .Include(a => a.Questions)
+                .ThenInclude(q => q.Options)
                 .FirstOrDefaultAsync(a => a.AssessmentId == id);
 
-            if (assessment == null)
-            {
-                return NotFound();
-            }
-
-            var currentUserId = GetCurrentUserId();
-            if (assessment.Course == null || assessment.Course.InstructorId.ToString() != currentUserId)
-            {
-                return Forbid("You can only delete assessments of your own courses.");
-            }
+            if (assessment == null) return NotFound();
 
             _context.Assessments.Remove(assessment);
             await _context.SaveChangesAsync();
@@ -183,15 +217,44 @@ namespace EduSyncWebAPI.Controllers
             return NoContent();
         }
 
-        private bool AssessmentExists(Guid id)
+        // Submit assessment answers and calculate score
+        [HttpPost("submit")]
+        [Authorize]
+        public async Task<IActionResult> SubmitAssessment([FromBody] AssessmentSubmissionDto submission)
         {
-            return _context.Assessments.Any(e => e.AssessmentId == id);
+            if (submission == null || submission.Answers == null)
+                return BadRequest("Invalid submission.");
+
+            var assessment = await _context.Assessments
+                .Include(a => a.Questions)
+                .ThenInclude(q => q.Options)
+                .FirstOrDefaultAsync(a => a.AssessmentId == submission.AssessmentId);
+
+            if (assessment == null)
+                return NotFound("Assessment not found");
+
+            int score = 0;
+
+            foreach (var answer in submission.Answers)
+            {
+                var question = assessment.Questions.FirstOrDefault(q => q.QuestionId == answer.QuestionId);
+                if (question != null)
+                {
+                    var selectedOption = question.Options.FirstOrDefault(o => o.OptionId == answer.SelectedOptionId);
+                    if (selectedOption != null && selectedOption.IsCorrect)
+                    {
+                        score += question.Marks;
+                    }
+                }
+            }
+
+            return Ok(new
+            {
+                Score = score,
+                MaxScore = assessment.MaxScore
+            });
         }
 
-        // Helper to get current logged-in user id from JWT claims
-        private string GetCurrentUserId()
-        {
-            return User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
-        }
     }
 }
+
