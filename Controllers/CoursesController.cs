@@ -22,10 +22,28 @@ namespace EduSyncWebAPI.Controllers
 
         // GET: api/Courses
         [AllowAnonymous]
+        // Inside GetCourses
         [HttpGet]
         public async Task<ActionResult<IEnumerable<CourseReadDTO>>> GetCourses()
         {
-            var courses = await _context.Courses.ToListAsync();
+            var currentUserId = GetCurrentUserId();
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            List<Course> courses;
+
+            if (userRole == "Instructor")
+            {
+                // Only get courses created by this instructor
+                var instructorGuid = Guid.Parse(currentUserId);
+                courses = await _context.Courses
+                            .Where(c => c.InstructorId == instructorGuid)
+                            .ToListAsync();
+            }
+            else
+            {
+                // Admin or other roles can view all
+                courses = await _context.Courses.ToListAsync();
+            }
 
             var courseDtos = courses.Select(c => new CourseReadDTO
             {
@@ -39,8 +57,10 @@ namespace EduSyncWebAPI.Controllers
             return Ok(courseDtos);
         }
 
+
         // GET: api/Courses/{id}
         [AllowAnonymous]
+        // Inside GetCourse
         [HttpGet("{id}")]
         public async Task<ActionResult<CourseDetailDTO>> GetCourse(Guid id)
         {
@@ -51,6 +71,14 @@ namespace EduSyncWebAPI.Controllers
 
             if (course == null)
                 return NotFound();
+
+            var currentUserId = GetCurrentUserId();
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (userRole == "Instructor" && course.InstructorId?.ToString() != currentUserId)
+            {
+                return Forbid("You can only view your own courses.");
+            }
 
             var courseDetailDto = new CourseDetailDTO
             {
@@ -76,7 +104,6 @@ namespace EduSyncWebAPI.Controllers
             return Ok(courseDetailDto);
         }
 
-        // PUT: api/Courses/{id}
         [Authorize(Roles = "Instructor")]
         [HttpPut("{id}")]
         public async Task<IActionResult> PutCourse(Guid id, CourseCreateDTO courseDto)
@@ -86,12 +113,15 @@ namespace EduSyncWebAPI.Controllers
                 return NotFound();
 
             var currentUserId = GetCurrentUserId();
-            if (course.InstructorId.ToString() != currentUserId)
+
+            if (course.InstructorId == null || course.InstructorId.ToString() != currentUserId)
                 return Forbid("You can only update your own courses.");
 
             course.Title = courseDto.Title;
             course.Description = courseDto.Description;
-            course.InstructorId = courseDto.InstructorId;
+            // Optional: prevent instructorId change on update
+            // course.InstructorId = course.InstructorId;
+
             course.MediaUrl = courseDto.MediaUrl;
 
             _context.Entry(course).State = EntityState.Modified;
@@ -110,6 +140,7 @@ namespace EduSyncWebAPI.Controllers
 
             return NoContent();
         }
+
 
         // POST: api/Courses
         [Authorize(Roles = "Instructor")]

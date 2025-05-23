@@ -22,8 +22,7 @@ namespace EduSyncWebAPI.Data
         public virtual DbSet<User> Users { get; set; }
 
         // Added DbSets for Questions and Options
-        public virtual DbSet<Question> Questions { get; set; }
-        public virtual DbSet<Option> Options { get; set; }
+
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
             => optionsBuilder.UseSqlServer("Data Source=MINX_MONIKA;Initial Catalog=EduSyncDB;Integrated Security=True;Connect Timeout=30;Encrypt=False;Trust Server Certificate=False;Application Intent=ReadWrite;Multi Subnet Failover=False");
@@ -83,31 +82,7 @@ namespace EduSyncWebAPI.Data
             });
 
             // New: Configure Question entity
-            modelBuilder.Entity<Question>(entity =>
-            {
-                entity.HasKey(e => e.QuestionId);
-
-                entity.Property(e => e.Text).HasMaxLength(500);
-
-                entity.HasOne(q => q.Assessment)
-                    .WithMany(a => a.Questions)
-                    .HasForeignKey(q => q.AssessmentId)
-                    .OnDelete(DeleteBehavior.Cascade);
-            });
-
-            // New: Configure Option entity
-            modelBuilder.Entity<Option>(entity =>
-            {
-                entity.HasKey(e => e.OptionId);
-
-                entity.Property(e => e.Text).HasMaxLength(300);
-
-                entity.HasOne(o => o.Question)
-                    .WithMany(q => q.Options)
-                    .HasForeignKey(o => o.QuestionId)
-                    .OnDelete(DeleteBehavior.Cascade);
-            });
-
+            
             OnModelCreatingPartial(modelBuilder);
         }
 
