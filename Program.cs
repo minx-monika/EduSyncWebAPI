@@ -50,6 +50,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+builder.Services.AddSingleton<EventHubService>();
+
+
 // Role-based authorization policies
 builder.Services.AddAuthorization(options =>
 {

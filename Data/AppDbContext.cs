@@ -25,7 +25,7 @@ namespace EduSyncWebAPI.Data
 
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-            => optionsBuilder.UseSqlServer("Data Source=MINX_MONIKA;Initial Catalog=EduSyncDB;Integrated Security=True;Connect Timeout=30;Encrypt=False;Trust Server Certificate=False;Application Intent=ReadWrite;Multi Subnet Failover=False");
+            => optionsBuilder.UseSqlServer("Server=tcp:edusync-server-azure.database.windows.net,1433;Initial Catalog=EduSync-DB;Persist Security Info=False;User ID=edusyncadmin;Password=EduSync#1234;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;");
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
